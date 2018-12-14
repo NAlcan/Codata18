@@ -1,0 +1,158 @@
+---
+title: "Jet classification"
+author: "Renato's: Renato, Ignaccio A., Sergio, Ignacio E."
+date: "December 11, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading data
+
+We use a dataset provided _event-0005.csv_ and load it as a DF.
+
+```{r results="hide",echo=F}
+df4 <- read.csv("event-0005.csv",sep=",")
+```
+
+### Variables inspection
+
+Jet was transformed in a factor.
+
+```{r echo="F"}
+df4$jet<-as.factor(df4$jet)
+```
+
+Correlation plot was used to explore associations between variables.
+
+```{r echo=FALSE}
+pairs(df4[, -c(1,9)], lower.panel = NULL, panel = panel.smooth)
+```
+
+In order to avoid multicollinearity and reduce the dimension of the problem we decided to exclude _constituten_ and _eta_.
+
+Then, with the aim of make all the variables comparables in the same space we centered and standarized by substracting the mean and dividng with it`s standar deviation.
+
+```{r}
+df4.1 <-as.data.frame( scale(df4 [, c("phi","px","py","pz","p")],center=T, scale=T))
+```
+
+## Non supervised: k-means
+
+We use k-means as an unsupervised method for clustering.
+
+The decision of how many cluster are necessary to structure the data we used an empirical rule to  estimate the reduction of magnitude of within groups variance as many centers are included and choose the number that compromise de simplicity with lowest within groups sum squares:
+
+```{r}
+wss2 = (nrow(df4.1)-1)*sum(apply(df4.1,2,var))
+```
+
+We calculate this magnitude using _kmeans_ with 1 to 7 centroids, and we plot the resuts.
+
+```{r echo=FALSE}
+wss2 = (nrow(df4.1)-1)*sum(apply(df4.1,2,var)) # sum of squares formula
+for (i in 2:7) wss2[i] = sum(kmeans(df4.1, centers=i)$withinss)
+
+plot(1:7, wss2, type="b", xlab="Number of Clusters", 
+     ylab="Within groups sum of squares")
+```
+
+We decided to use three centroids (that matched jet, although not used in this analysys). We save the results in a new variable _Njet_, and plot it to compare with original _jet_ as control. Original _jet_ is presented as shape and _Njet_ is presented as color. 
+
+```{r echo=FALSE}
+km3<-kmeans(df4.1, center=3)
+
+pairs(df4.1, pch=as.numeric(df4$jet), col=as.numeric(km3$cluster), lower.panel = NULL)
+```
+
+## Supervised
+
+We used three Supervised methods in order to build a classifier of the Jet variable: *RandomForest*, *Tree*, and *SVM*. The procedure that we follow to access model performance was to random split the dataset into 2/3 used for training and 1/3 for testing. This was interated about 50 times in order to get a distribution of the errors
+
+The error was calculated from the confussion matrix.
+
+```{r echo=FALSE,fig.width=3, fig.height=3}
+knitr::include_graphics("confmatrix.png")
+```
+
+Were in the diagonal are the right classified cases. The sum of diagonel over all the cases give the accuracy of the prediction and their inverse is the error rate:
+```{r eval=FALSE}
+error <- 1 - sum(diag(table))/sum(table)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results="hide"}
+require(e1071)# for SVM
+require(rpart)# for TREEs
+require(randomForest) # for RANDOM FOREST
+require(ggplot2) # for GRAPHICS
+
+df4.1$jet<-df4$jet# return jet variable to DF
+
+error.rf=list(matrix(NA, 50)) # The storage for random Forest errors
+error.tree=list(matrix(NA, 50)) # The storage for trees errors
+error.svm=list(matrix(NA, 50))  # The storage for svm errors
+prop <- 1/3 # The proportion of data that will use to split the test sample
+
+set.seed(20)
+# 50 random iterations of splitting data into train (and build the model) and test (evaluate the prediction error). This allows you to obtain an error distribution
+# This procedure is know as ¨cross validation withe sample test¨
+for (k in 1:50) { 
+  
+  s <-sample (ncol(df4.1),(prop*df4.1))
+  df_train <- df4.1[-s,]
+  df_test <- df4.1[s,]
+  
+  ## Fit and svm eith linear kernel and default parameters
+  svmfit <- svm(jet ~. , data = df_train, kernel = "linear") 
+
+  pred.svm <- predict(svmfit, df_test) # predict with test data
+  t.svm<-table(pred.svm, df_test[,6]) # Confussion matrix between observed and predicted values
+
+  error.svm[k]<- 1 - sum(diag(t.svm))/sum(t.svm) # Missclasification error = 1 - accuraccy (well classified over total of observations). 
+
+  # Fit a tree with default parameters and NO OPTIMIZING IT BY ANY PRUNNING mora than the defaul complexity parameter. see ?cart ¨cp¨
+  tree <- rpart(jet ~. , data = df_train)
+
+  pred.tree <- predict(tree, df_test,type="class")
+  t.tree<-table(pred.tree, df_test[,6])
+
+  error.tree[k]<- 1 - sum(diag(t.tree))/sum(t.tree)
+
+  # Random Forest
+  # the parameters are given by default. see ?randomForest
+  rf <-randomForest(jet ~. , data = df_train, ntree=100) 
+
+  pred.rf <- predict(rf, df_test,type="class")
+  t.rf<-table(pred.rf, df_test[,6])
+
+  error.rf[k]<- 1 - sum(diag(t.rf))/sum(t.rf)
+  
+}
+## Store the result in a data frame##
+metrics <- data.frame(
+ "error"=c(unlist(error.rf),unlist(error.tree), unlist(error.svm)),
+ "func"=rep(c("RF","TREE","SVM"),each=50))
+str(metrics)
+
+```
+
+We use the violin plot to present the error rates of each method in the 50 iterations. The main advantage of this visualization is that it combines de summary metrics of the boxplot with the densisty distribution of the data
+
+```{r echo=FALSE}
+knitr::opts_chunk$set(fig.width=5, fig.height=3) 
+```
+
+```{r echo=FALSE}
+ggplot(metrics,aes(y=error,x=func,fill=func)) + geom_violin() +
+  labs(y="Test error rate", x= NULL, fill="Function") + 
+  theme(legend.position = "bottom",
+        axis.text = element_text(size=20),
+        axis.title = element_text(size=15),
+        legend.text= element_text(size=15),
+        legend.title = element_text(size=15))
+```
+
+From the model performance we can conclude that, in overall all models have very (surprisingly) low error rate (less than 0.06). And between the three functions, we would choose the SVM because it has almost 0 error over the testing sample.
+
